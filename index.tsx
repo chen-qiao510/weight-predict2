@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI } from "@google/genai";
@@ -13,7 +14,10 @@ import {
   Minus,
   Plus,
   Info,
-  Loader2
+  Loader2,
+  Save,
+  BarChart3,
+  History
 } from 'lucide-react';
 
 // --- Configuration ---
@@ -63,6 +67,13 @@ interface MealLog {
   [key: string]: MealEntry[];
 }
 
+interface DailyRecord {
+  date: string; // YYYY-MM-DD
+  calories: number;
+  tdee: number;
+  weight: number;
+}
+
 // --- Helper Components ---
 
 const Card = ({ children, className = '' }: { children?: React.ReactNode, className?: string }) => (
@@ -97,6 +108,91 @@ const Select = (props: React.SelectHTMLAttributes<HTMLSelectElement>) => (
   </div>
 );
 
+// --- Custom Chart Component (SVG) ---
+const HistoryChart = ({ data }: { data: DailyRecord[] }) => {
+  if (!data || data.length === 0) return <div className="text-center text-gray-400 py-10">暂无历史数据，请保存今天的记录</div>;
+
+  // Configuration
+  const height = 200;
+  const width = 100; // percent
+  const padding = 20;
+  
+  // Get last 7 days or all data
+  const chartData = data.slice(-7); 
+  
+  const maxVal = Math.max(...chartData.map(d => Math.max(d.calories, d.tdee)), 2000) * 1.1;
+
+  return (
+    <div className="w-full h-64 flex flex-col">
+      <div className="flex-1 relative">
+        <svg className="w-full h-full" viewBox={`0 0 ${chartData.length * 60} ${height + padding * 2}`}>
+          {/* Grid lines */}
+          <line x1="0" y1={height} x2="100%" y2={height} stroke="#e5e7eb" strokeWidth="1" />
+          <line x1="0" y1="0" x2="100%" y2="0" stroke="#e5e7eb" strokeWidth="1" strokeDasharray="4 4" />
+          
+          {chartData.map((record, i) => {
+            const x = i * 60 + 30;
+            const barHeight = (record.calories / maxVal) * height;
+            const tdeeY = height - (record.tdee / maxVal) * height;
+            const isOver = record.calories > record.tdee;
+            
+            return (
+              <g key={record.date}>
+                {/* TDEE Line Segment */}
+                {i > 0 && (
+                   <line 
+                    x1={(i - 1) * 60 + 30} 
+                    y1={height - (chartData[i-1].tdee / maxVal) * height}
+                    x2={x}
+                    y2={tdeeY}
+                    stroke="#9CA3AF"
+                    strokeWidth="2"
+                    strokeDasharray="4 2"
+                   />
+                )}
+                
+                {/* TDEE Point */}
+                <circle cx={x} cy={tdeeY} r="3" fill="#9CA3AF" />
+
+                {/* Calorie Bar */}
+                <rect 
+                  x={x - 15} 
+                  y={height - barHeight} 
+                  width="30" 
+                  height={barHeight} 
+                  rx="4"
+                  fill={isOver ? "#F87171" : "#4ADE80"} 
+                  className="transition-all duration-500 hover:opacity-80"
+                />
+
+                {/* Labels */}
+                <text x={x} y={height - barHeight - 5} textAnchor="middle" fontSize="10" fill="#6B7280">
+                  {record.calories}
+                </text>
+                
+                <text x={x} y={height + 15} textAnchor="middle" fontSize="10" fill="#374151">
+                  {record.date.slice(5)}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      <div className="flex justify-center gap-6 mt-2 text-xs text-gray-500">
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-3 bg-green-400 rounded"></div> 消耗小于 TDEE (减脂)
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-3 bg-red-400 rounded"></div> 消耗大于 TDEE (增重)
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-3 h-1 bg-gray-400 border-t border-dashed"></div> TDEE 参考线
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- Main Application ---
 
 const App = () => {
@@ -122,8 +218,23 @@ const App = () => {
   const [selectedMeal, setSelectedMeal] = useState<'lunch' | 'dinner'>('lunch');
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [customFoods, setCustomFoods] = useState<FoodItem[]>([]);
+  
+  // History State
+  const [history, setHistory] = useState<DailyRecord[]>([]);
 
   // --- Effects ---
+
+  // Load History from LocalStorage
+  useEffect(() => {
+    const savedHistory = localStorage.getItem('calorie_history');
+    if (savedHistory) {
+      try {
+        setHistory(JSON.parse(savedHistory));
+      } catch (e) {
+        console.error("Failed to parse history", e);
+      }
+    }
+  }, []);
 
   // Calculate BMR and TDEE whenever stats change
   useEffect(() => {
@@ -180,9 +291,11 @@ const App = () => {
     setIsAiLoading(true);
 
     try {
-      const apiKey = process.env.API_KEY;
+      // @ts-ignore
+      const apiKey = process.env.API_KEY || process.env.VITE_API_KEY || process.env.NEXT_PUBLIC_API_KEY || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY);
+      
       if (!apiKey) {
-        alert("API Key not found in environment.");
+        alert("API Key not found. Please set VITE_API_KEY or API_KEY in your Vercel Environment Variables.");
         return;
       }
 
@@ -222,13 +335,13 @@ const App = () => {
       }
     } catch (error) {
       console.error("AI Error:", error);
-      alert("AI 估算失败，请稍后重试。");
+      alert("AI 估算失败，请检查 API Key 或稍后重试。");
     } finally {
       setIsAiLoading(false);
     }
   };
 
-  // --- Calculations for Display ---
+  // --- Calculations ---
 
   const calculateMealCalories = (entries: MealEntry[]) => {
     return entries.reduce((total, entry) => total + (entry.food.calories * entry.quantity), 0);
@@ -240,8 +353,41 @@ const App = () => {
   
   const dailyBalance = totalIntake - tdee;
   const weeklyBalance = dailyBalance * 7;
-  // 7700 kcal approx 1kg fat
   const projectedWeightChange = weeklyBalance / 7700;
+
+  // --- Save History Feature ---
+  const saveTodayRecord = () => {
+    if (totalIntake === 0) {
+      if (!confirm("今日摄入热量为 0，确定要保存吗？")) return;
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+    
+    const newRecord: DailyRecord = {
+      date: today,
+      calories: totalIntake,
+      tdee: tdee,
+      weight: stats.weight
+    };
+
+    setHistory(prev => {
+      // Remove existing entry for today if it exists, then add new one
+      const filtered = prev.filter(item => item.date !== today);
+      const updated = [...filtered, newRecord].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      
+      localStorage.setItem('calorie_history', JSON.stringify(updated));
+      return updated;
+    });
+
+    alert("今日记录已保存！");
+  };
+
+  const clearHistory = () => {
+    if(confirm("确定要清空所有历史记录吗？")) {
+      setHistory([]);
+      localStorage.removeItem('calorie_history');
+    }
+  };
 
   // Filter foods for search
   const allFoods = [...PREDEFINED_FOODS, ...customFoods];
@@ -400,7 +546,7 @@ const App = () => {
                     </button>
                   ))}
                   
-                  {/* AI Estimate Button if no perfect match or user wants to try AI */}
+                  {/* AI Estimate Button */}
                   <button 
                     onClick={estimateCaloriesWithAI}
                     disabled={isAiLoading}
@@ -484,13 +630,22 @@ const App = () => {
       </div>
 
       {/* Prediction Dashboard */}
-      <Card className="bg-gradient-to-br from-gray-900 to-gray-800 text-white border-none">
-        <h2 className="text-xl font-bold mb-6 flex items-center gap-2">
-          <TrendingUp className="w-6 h-6 text-green-400" />
-          分析与预测
-        </h2>
+      <Card className="bg-gradient-to-br from-gray-900 to-gray-800 text-white border-none relative overflow-hidden">
+        <div className="flex justify-between items-start mb-6">
+          <h2 className="text-xl font-bold flex items-center gap-2">
+            <TrendingUp className="w-6 h-6 text-green-400" />
+            分析与预测
+          </h2>
+          <button 
+            onClick={saveTodayRecord}
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-lg"
+          >
+            <Save className="w-4 h-4" />
+            保存今日记录
+          </button>
+        </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 relative z-10">
           
           {/* Calorie Balance */}
           <div className="space-y-2">
@@ -545,7 +700,65 @@ const App = () => {
               * 理论估算值 (7700kcal ≈ 1kg)，实际情况受水分、激素等影响会有波动。
             </p>
           </div>
+        </div>
+      </Card>
 
+      {/* History Chart Section */}
+      <Card>
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+            <BarChart3 className="w-5 h-5 text-purple-500" />
+            历史记录与趋势
+          </h2>
+          {history.length > 0 && (
+            <button 
+              onClick={clearHistory}
+              className="text-xs text-gray-400 hover:text-red-500 flex items-center gap-1"
+            >
+              <Trash2 className="w-3 h-3" /> 清空记录
+            </button>
+          )}
+        </div>
+        
+        <HistoryChart data={history} />
+        
+        <div className="mt-8">
+          <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
+            <History className="w-4 h-4" /> 详细记录表
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left text-gray-500">
+              <thead className="text-xs text-gray-700 uppercase bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3">日期</th>
+                  <th className="px-6 py-3">摄入 (kcal)</th>
+                  <th className="px-6 py-3">目标 (TDEE)</th>
+                  <th className="px-6 py-3">状态</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.slice().reverse().map((record) => (
+                  <tr key={record.date} className="bg-white border-b hover:bg-gray-50">
+                    <td className="px-6 py-4 font-medium text-gray-900">{record.date}</td>
+                    <td className="px-6 py-4">{record.calories}</td>
+                    <td className="px-6 py-4">{record.tdee}</td>
+                    <td className="px-6 py-4">
+                      {record.calories > record.tdee ? (
+                        <span className="text-red-500 font-medium">超标 ({record.calories - record.tdee})</span>
+                      ) : (
+                        <span className="text-green-500 font-medium">达标</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {history.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-6 py-4 text-center text-gray-400">暂无数据</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </Card>
 
