@@ -24,6 +24,8 @@ import {
 // --- Safe API Key Retrieval ---
 const getApiKey = () => {
   // Check for common environment variable patterns safely
+  
+  // 1. Check for Vite style (most likely for Vercel + Vite)
   try {
     // @ts-ignore
     if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
@@ -32,9 +34,13 @@ const getApiKey = () => {
     }
   } catch (e) {}
 
+  // 2. Check for process.env (Standard Node/Next.js)
   try {
-    if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
-      return process.env.API_KEY;
+    if (typeof process !== 'undefined' && process.env) {
+      // Check VITE_ prefix in process.env just in case
+      if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
+      // Check standard name
+      if (process.env.API_KEY) return process.env.API_KEY;
     }
   } catch (e) {}
 
@@ -197,17 +203,20 @@ const App = () => {
 
   // AI Estimation Handler
   const handleAiEstimate = async () => {
-    // Guideline: The API key must be obtained exclusively from the environment variable process.env.API_KEY.
-    // Assume this variable is pre-configured, valid, and accessible.
-    
     if (!searchQuery.trim()) return;
+
+    // Retrieve API Key using the robust helper
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      setAiError('未检测到 API Key，请在 Vercel 环境变量中配置 VITE_API_KEY');
+      return;
+    }
 
     setIsAiLoading(true);
     setAiError('');
 
     try {
-      // Guideline: Use this process.env.API_KEY string directly when initializing the @google/genai client instance.
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey: apiKey });
       const prompt = `请估算食物 "${searchQuery}" 的热量。请返回一个严格的 JSON 对象，格式为：{"name": "食物标准名称", "unit": "单位(如: 碗, 个, 100g)", "calories": 数字(大卡)}。不要包含任何 Markdown 格式。`;
 
       const response = await ai.models.generateContent({
@@ -240,7 +249,7 @@ const App = () => {
       }
     } catch (err) {
       console.error(err);
-      setAiError('AI 服务暂时不可用，请重试');
+      setAiError('AI 服务暂时不可用，请检查 Key 或重试');
     } finally {
       setIsAiLoading(false);
     }
