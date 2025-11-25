@@ -570,35 +570,97 @@ const App = () => {
                 历史趋势
               </h2>
 
-              {/* Simple SVG Bar Chart */}
-              <div className="mb-8">
-                 <div className="h-64 flex items-end gap-2 border-b border-gray-200 pb-2 px-2 relative">
-                    {/* TDEE Line */}
-                    <div className="absolute w-full border-t-2 border-dashed border-blue-300 pointer-events-none opacity-50 flex items-center" style={{ bottom: `${(tdee / (Math.max(...history.map(h => h.caloriesIntake), tdee) * 1.1)) * 100}%` }}>
-                       <span className="text-xs text-blue-400 -mt-5 bg-white px-1">TDEE: {tdee}</span>
-                    </div>
+              {/* SVG Line Chart */}
+              <div className="mb-8 p-4 bg-white rounded-lg border border-gray-100">
+                 {(() => {
+                    // Sort history chronologically for the line chart (Oldest -> Newest)
+                    const sortedHistory = [...history].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()).slice(-7);
+                    
+                    if (sortedHistory.length === 0) return <div className="text-center text-gray-400 py-10">暂无数据，请保存记录</div>;
 
-                    {history.slice(0, 7).reverse().map((record, i) => {
-                      const maxVal = Math.max(...history.map(h => h.caloriesIntake), tdee) * 1.1;
-                      const heightPct = (record.caloriesIntake / maxVal) * 100;
-                      const isOver = record.caloriesIntake > record.caloriesBurned;
-                      return (
-                        <div key={i} className="flex-1 flex flex-col items-center group relative">
-                           <div 
-                              className={`w-full max-w-[40px] rounded-t-md transition-all duration-300 ${isOver ? 'bg-red-300 hover:bg-red-400' : 'bg-green-300 hover:bg-green-400'}`}
-                              style={{ height: `${heightPct}%` }}
-                           >
-                             <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-xs font-medium text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity">
-                               {record.caloriesIntake}
-                             </div>
-                           </div>
-                           <div className="text-[10px] text-gray-500 mt-2 rotate-0 truncate w-full text-center">
-                             {record.date.slice(5)}
-                           </div>
+                    // Chart Dimensions & Scales
+                    const width = 100; // viewBox units
+                    const height = 50; // viewBox units
+                    // Y Scale: max value + 20% padding
+                    const maxVal = Math.max(...sortedHistory.map(h => h.caloriesIntake), tdee) * 1.2;
+                    
+                    // Helpers to map data to SVG coordinates
+                    const getX = (i: number) => {
+                       if (sortedHistory.length <= 1) return 50; // Center if only 1 point
+                       return (i / (sortedHistory.length - 1)) * 100;
+                    };
+                    const getY = (val: number) => height - (val / maxVal) * height;
+
+                    // Generate Line Path
+                    const points = sortedHistory.map((d, i) => `${getX(i)},${getY(d.caloriesIntake)}`).join(' ');
+                    const tdeeY = getY(tdee);
+
+                    return (
+                      <div className="relative w-full aspect-[2/1] sm:aspect-[3/1]">
+                         {/* Y-axis Labels (Absolute positioning) */}
+                         <div className="absolute left-0 top-0 h-full flex flex-col justify-between text-[10px] text-gray-400 pointer-events-none pr-1 w-8 border-r border-gray-100">
+                           <span>{Math.round(maxVal)}</span>
+                           <span>{Math.round(maxVal/2)}</span>
+                           <span>0</span>
                         </div>
-                      )
-                    })}
-                 </div>
+
+                        {/* Chart Area */}
+                        <div className="absolute left-10 right-0 top-0 bottom-6">
+                            <svg className="w-full h-full" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
+                                {/* Defs for Gradient */}
+                                <defs>
+                                  <linearGradient id="chartGradient" x1="0" x2="0" y1="0" y2="1">
+                                    <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.2" />
+                                    <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
+                                  </linearGradient>
+                                </defs>
+
+                                {/* Grid Lines */}
+                                <line x1="0" y1="0" x2="100" y2="0" stroke="#f3f4f6" strokeWidth="0.5" />
+                                <line x1="0" y1={height/2} x2="100" y2={height/2} stroke="#f3f4f6" strokeWidth="0.5" />
+                                <line x1="0" y1={height} x2="100" y2={height} stroke="#f3f4f6" strokeWidth="0.5" />
+
+                                {/* TDEE Reference Line (Dashed) */}
+                                <line x1="0" y1={tdeeY} x2="100" y2={tdeeY} stroke="#94a3b8" strokeWidth="0.5" strokeDasharray="3 3" />
+                                
+                                {/* Area Fill */}
+                                <polygon points={`0,${height} ${points} 100,${height}`} fill="url(#chartGradient)" />
+
+                                {/* Main Data Line */}
+                                <polyline points={points} fill="none" stroke="#2563eb" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+
+                                {/* Data Points */}
+                                {sortedHistory.map((d, i) => (
+                                  <circle 
+                                    key={i} 
+                                    cx={getX(i)} 
+                                    cy={getY(d.caloriesIntake)} 
+                                    r="3" 
+                                    className="fill-blue-600 stroke-white stroke-2 hover:r-4 transition-all cursor-pointer"
+                                    vectorEffect="non-scaling-stroke"
+                                  >
+                                    <title>{d.date}: {d.caloriesIntake} kcal</title>
+                                  </circle>
+                                ))}
+                            </svg>
+
+                            {/* TDEE Label */}
+                            <div className="absolute right-0 bg-slate-100 text-slate-600 text-[10px] px-1.5 py-0.5 rounded shadow-sm transform -translate-y-1/2" style={{top: `${(tdeeY/height)*100}%`}}>
+                               TDEE: {tdee}
+                            </div>
+                        </div>
+
+                        {/* X-axis Labels */}
+                        <div className="absolute left-10 right-0 bottom-0 h-6 flex justify-between items-center text-[10px] text-gray-500">
+                           {sortedHistory.map((d, i) => (
+                             <div key={i} style={{ width: `${100/sortedHistory.length}%`, textAlign: 'center' }}>
+                               {d.date.slice(5)} {/* Show MM-DD */}
+                             </div>
+                           ))}
+                        </div>
+                      </div>
+                    )
+                 })()}
               </div>
 
               {/* History Table */}
