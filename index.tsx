@@ -18,7 +18,12 @@ import {
   BarChart3,
   History,
   BookOpen,
-  Calendar
+  Calendar,
+  Eye,
+  ScrollText,
+  Sunrise,
+  Sun,
+  Moon
 } from 'lucide-react';
 
 // --- Safe API Key Retrieval ---
@@ -48,6 +53,8 @@ const getApiKey = () => {
 };
 
 // --- Types ---
+type MealCategory = 'breakfast' | 'lunch' | 'dinner';
+
 type FoodItem = {
   id: string;
   name: string;
@@ -55,6 +62,7 @@ type FoodItem = {
   unit: string;
   quantity: number;
   source: 'ai' | 'user';
+  category: MealCategory; // Added category
 };
 
 type LibraryItem = {
@@ -77,6 +85,7 @@ type DailyRecord = {
   caloriesIntake: number;
   caloriesBurned: number; // TDEE
   weight?: number;
+  meals: FoodItem[]; // Saved meals for that day
 };
 
 // --- Constants ---
@@ -95,6 +104,12 @@ const INITIAL_STATS: UserStats = {
   height: 175,
   activityLevel: 1.375,
   goal: 'lose',
+};
+
+const MEAL_CONFIG = {
+  breakfast: { label: '早餐', icon: Sunrise, color: 'text-orange-500', bg: 'bg-orange-50', border: 'border-orange-200' },
+  lunch: { label: '午餐', icon: Sun, color: 'text-yellow-600', bg: 'bg-yellow-50', border: 'border-yellow-200' },
+  dinner: { label: '晚餐', icon: Moon, color: 'text-indigo-500', bg: 'bg-indigo-50', border: 'border-indigo-200' }
 };
 
 // --- Helper Functions ---
@@ -118,16 +133,45 @@ const getTodayDateString = () => {
   return `${year}-${month}-${day}`;
 };
 
+const getTimeBasedMealCategory = (): MealCategory => {
+  const hour = new Date().getHours();
+  if (hour < 10) return 'breakfast';
+  if (hour < 16) return 'lunch';
+  return 'dinner';
+};
+
+// Simple smoothing function for SVG path (Catmull-Rom spline to Bezier conversion)
+const getSmoothPath = (points: {x: number, y: number}[]) => {
+  if (points.length === 0) return '';
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+
+  let d = `M ${points[0].x} ${points[0].y}`;
+  
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i === 0 ? 0 : i - 1];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[i + 2] || p2;
+
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+    d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+  }
+  return d;
+};
+
 // --- Components ---
 
-// Fix: Make children optional to prevent TypeScript errors when props are checked before children are injected.
 const Card = ({ children, className = "" }: { children?: React.ReactNode, className?: string }) => (
   <div className={`bg-white rounded-xl shadow-sm border border-gray-100 p-6 ${className}`}>
     {children}
   </div>
 );
 
-// Fix: Make children optional to prevent TypeScript errors when props are checked before children are injected.
 const Label = ({ children }: { children?: React.ReactNode }) => (
   <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
     {children}
@@ -154,6 +198,7 @@ const App = () => {
   const [tdee, setTdee] = useState<number>(0);
 
   // State: Food & Tracking
+  const [activeCategory, setActiveCategory] = useState<MealCategory>(getTimeBasedMealCategory());
   const [currentMeals, setCurrentMeals] = useState<FoodItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
@@ -163,6 +208,10 @@ const App = () => {
   // State: History & Records
   const [selectedDate, setSelectedDate] = useState<string>(getTodayDateString());
   const [history, setHistory] = useState<DailyRecord[]>([]);
+  
+  // State: UI Interactions
+  const [hoveredChartPoint, setHoveredChartPoint] = useState<{x: number, y: number, value: number, date: string} | null>(null);
+  const [hoveredMealRow, setHoveredMealRow] = useState<string | null>(null); // Date string as ID
 
   // Calculate TDEE on stats change
   useEffect(() => {
@@ -185,6 +234,17 @@ const App = () => {
     if (savedStats) {
       setStats(JSON.parse(savedStats));
     }
+    
+    const savedMeals = localStorage.getItem('currentMeals');
+    if (savedMeals) {
+        // Migration: Ensure category exists for old data
+        const parsed = JSON.parse(savedMeals);
+        const migrated = parsed.map((m: any) => ({
+            ...m,
+            category: m.category || 'lunch' 
+        }));
+        setCurrentMeals(migrated);
+    }
   }, []);
 
   // Save to LocalStorage effects
@@ -199,6 +259,10 @@ const App = () => {
   useEffect(() => {
     localStorage.setItem('userStats', JSON.stringify(stats));
   }, [stats]);
+  
+  useEffect(() => {
+      localStorage.setItem('currentMeals', JSON.stringify(currentMeals));
+  }, [currentMeals]);
 
 
   // AI Estimation Handler
@@ -262,7 +326,8 @@ const App = () => {
       calories: item.calories,
       unit: item.unit,
       quantity: 1,
-      source: 'user'
+      source: 'user',
+      category: activeCategory
     };
     setCurrentMeals(prev => [...prev, newFood]);
   };
@@ -274,7 +339,7 @@ const App = () => {
         return { ...item, quantity: newQ };
       }
       return item;
-    }).filter(item => item.quantity > 0)); // Optional: remove if 0? keeping it simple > 0
+    }).filter(item => item.quantity > 0)); 
   };
 
   const removeFood = (id: string) => {
@@ -288,7 +353,8 @@ const App = () => {
       date: selectedDate,
       caloriesIntake: Math.round(totalIntake),
       caloriesBurned: tdee,
-      weight: typeof stats.weight === 'number' ? stats.weight : undefined
+      weight: typeof stats.weight === 'number' ? stats.weight : undefined,
+      meals: [...currentMeals] // Clone current meals for history
     };
 
     setHistory(prev => {
@@ -297,7 +363,8 @@ const App = () => {
       // Add new record and sort
       return [...filtered, newRecord].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     });
-
+    
+    // Optional: Clear current meals after save? Maybe not, allow user to keep editing.
     alert(`已保存 ${selectedDate} 的记录！`);
   };
 
@@ -411,12 +478,35 @@ const App = () => {
               <Utensils size={20} className="text-green-500" />
               今日饮食记录
             </h2>
+
+            {/* Meal Category Selector */}
+            <div className="flex bg-gray-100 p-1 rounded-lg mb-4">
+              {(Object.keys(MEAL_CONFIG) as MealCategory[]).map((cat) => {
+                const config = MEAL_CONFIG[cat];
+                const Icon = config.icon;
+                const isActive = activeCategory === cat;
+                return (
+                  <button
+                    key={cat}
+                    onClick={() => setActiveCategory(cat)}
+                    className={`flex-1 flex items-center justify-center gap-2 py-2 text-sm font-medium rounded-md transition-all ${
+                      isActive 
+                        ? 'bg-white text-gray-800 shadow-sm' 
+                        : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    <Icon size={16} className={isActive ? config.color : ''} />
+                    {config.label}
+                  </button>
+                );
+              })}
+            </div>
             
             <div className="flex gap-2 mb-4">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-2.5 text-gray-400" size={18} />
                 <Input 
-                  placeholder="输入食物名称 (如: 红烧牛肉面)" 
+                  placeholder={`添加${MEAL_CONFIG[activeCategory].label}食物 (如: 牛奶, 三明治)`} 
                   className="pl-10"
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
@@ -426,7 +516,7 @@ const App = () => {
               <button 
                 onClick={handleAiEstimate}
                 disabled={isAiLoading || !searchQuery}
-                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 disabled:opacity-50 transition-colors"
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 disabled:opacity-50 transition-colors shrink-0"
               >
                 {isAiLoading ? <Loader2 className="animate-spin" size={18} /> : <Brain size={18} />}
                 <span className="hidden sm:inline">AI 估算</span>
@@ -459,31 +549,48 @@ const App = () => {
               </div>
             )}
 
-            <div className="flex-1 overflow-y-auto space-y-3 pr-1 min-h-[200px]">
+            <div className="flex-1 overflow-y-auto pr-1 min-h-[200px]">
               {currentMeals.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm">
                   <BookOpen size={48} className="mb-2 opacity-20" />
-                  <p>暂无记录，请搜索并添加食物</p>
+                  <p>暂无记录，请选择餐点并添加食物</p>
                 </div>
               ) : (
-                currentMeals.map((item) => (
-                  <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100 group">
-                    <div>
-                      <div className="font-medium text-gray-800">{item.name}</div>
-                      <div className="text-xs text-gray-500">{item.calories} 大卡 / {item.unit}</div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-center gap-2 bg-white rounded-md border border-gray-200 px-1 py-1">
-                        <button onClick={() => updateQuantity(item.id, -0.5)} className="p-1 hover:bg-gray-100 rounded text-gray-600"><Minus size={14} /></button>
-                        <span className="text-sm w-8 text-center font-medium">{item.quantity}</span>
-                        <button onClick={() => updateQuantity(item.id, 0.5)} className="p-1 hover:bg-gray-100 rounded text-gray-600"><Plus size={14} /></button>
+                <div className="space-y-4">
+                  {(['breakfast', 'lunch', 'dinner'] as MealCategory[]).map(cat => {
+                    const mealsInCat = currentMeals.filter(m => (m.category || 'lunch') === cat);
+                    if (mealsInCat.length === 0) return null;
+                    const config = MEAL_CONFIG[cat];
+                    const CatIcon = config.icon;
+
+                    return (
+                      <div key={cat} className="space-y-2">
+                        <div className={`flex items-center gap-2 text-xs font-bold uppercase tracking-wider ${config.color} border-b ${config.border} pb-1`}>
+                          <CatIcon size={14} />
+                          {config.label}
+                        </div>
+                        {mealsInCat.map((item) => (
+                          <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100 group">
+                            <div>
+                              <div className="font-medium text-gray-800">{item.name}</div>
+                              <div className="text-xs text-gray-500">{item.calories} 大卡 / {item.unit}</div>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <div className="flex items-center gap-2 bg-white rounded-md border border-gray-200 px-1 py-1">
+                                <button onClick={() => updateQuantity(item.id, -0.5)} className="p-1 hover:bg-gray-100 rounded text-gray-600"><Minus size={14} /></button>
+                                <span className="text-sm w-8 text-center font-medium">{item.quantity}</span>
+                                <button onClick={() => updateQuantity(item.id, 0.5)} className="p-1 hover:bg-gray-100 rounded text-gray-600"><Plus size={14} /></button>
+                              </div>
+                              <button onClick={() => removeFood(item.id)} className="text-gray-400 hover:text-red-500 transition-colors p-1">
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                      <button onClick={() => removeFood(item.id)} className="text-gray-400 hover:text-red-500 transition-colors p-1">
-                        <Trash2 size={16} />
-                      </button>
-                    </div>
-                  </div>
-                ))
+                    )
+                  })}
+                </div>
               )}
             </div>
             
@@ -570,107 +677,122 @@ const App = () => {
                 历史趋势
               </h2>
 
-              {/* SVG Line Chart */}
+              {/* Improved SVG Smooth Line Chart */}
               <div className="mb-8 p-4 bg-white rounded-lg border border-gray-100">
                  {(() => {
-                    // Sort history chronologically for the line chart (Oldest -> Newest)
-                    const sortedHistory = [...history].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()).slice(-7);
+                    const sortedHistory = [...history].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()).slice(-10);
                     
                     if (sortedHistory.length === 0) return <div className="text-center text-gray-400 py-10">暂无数据，请保存记录</div>;
 
                     // Chart Dimensions & Scales
-                    const width = 100; // viewBox units
-                    const height = 50; // viewBox units
-                    // Y Scale: max value + 20% padding
-                    const maxVal = Math.max(...sortedHistory.map(h => h.caloriesIntake), tdee) * 1.2;
+                    const width = 800; 
+                    const height = 300; 
+                    const padding = 40;
                     
-                    // Helpers to map data to SVG coordinates
+                    const maxVal = Math.max(...sortedHistory.map(h => h.caloriesIntake), tdee) * 1.15;
+                    
                     const getX = (i: number) => {
-                       if (sortedHistory.length <= 1) return 50; // Center if only 1 point
-                       return (i / (sortedHistory.length - 1)) * 100;
+                       if (sortedHistory.length <= 1) return width / 2;
+                       return padding + (i / (sortedHistory.length - 1)) * (width - padding * 2);
                     };
-                    const getY = (val: number) => height - (val / maxVal) * height;
+                    const getY = (val: number) => height - padding - (val / maxVal) * (height - padding * 2);
 
-                    // Generate Line Path
-                    const points = sortedHistory.map((d, i) => `${getX(i)},${getY(d.caloriesIntake)}`).join(' ');
+                    const pointsArr = sortedHistory.map((d, i) => ({x: getX(i), y: getY(d.caloriesIntake)}));
+                    const smoothPath = getSmoothPath(pointsArr);
+                    
+                    // Close the path for area fill
+                    const areaPath = pointsArr.length > 0 
+                      ? `${smoothPath} L ${pointsArr[pointsArr.length-1].x} ${height - padding} L ${pointsArr[0].x} ${height - padding} Z`
+                      : '';
+
                     const tdeeY = getY(tdee);
 
                     return (
-                      <div className="relative w-full aspect-[2/1] sm:aspect-[3/1]">
-                         {/* Y-axis Labels (Absolute positioning) */}
-                         <div className="absolute left-0 top-0 h-full flex flex-col justify-between text-[10px] text-gray-400 pointer-events-none pr-1 w-8 border-r border-gray-100">
-                           <span>{Math.round(maxVal)}</span>
-                           <span>{Math.round(maxVal/2)}</span>
-                           <span>0</span>
-                        </div>
+                      <div className="relative w-full aspect-[2/1] sm:aspect-[3/1] max-h-[300px]">
+                        <svg className="w-full h-full overflow-visible" viewBox={`0 0 ${width} ${height}`}>
+                            <defs>
+                              <linearGradient id="chartGradient" x1="0" x2="0" y1="0" y2="1">
+                                <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.4" />
+                                <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
+                              </linearGradient>
+                            </defs>
 
-                        {/* Chart Area */}
-                        <div className="absolute left-10 right-0 top-0 bottom-6">
-                            <svg className="w-full h-full" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none">
-                                {/* Defs for Gradient */}
-                                <defs>
-                                  <linearGradient id="chartGradient" x1="0" x2="0" y1="0" y2="1">
-                                    <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.2" />
-                                    <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
-                                  </linearGradient>
-                                </defs>
+                            {/* Grid Lines Y */}
+                            {[0, 0.5, 1].map(ratio => {
+                                const y = height - padding - ratio * (height - padding * 2);
+                                return (
+                                  <g key={ratio}>
+                                    <line x1={padding} y1={y} x2={width - padding} y2={y} stroke="#f3f4f6" strokeWidth="1" />
+                                    <text x={padding - 10} y={y + 4} textAnchor="end" fontSize="10" fill="#9ca3af">
+                                      {Math.round(ratio * maxVal)}
+                                    </text>
+                                  </g>
+                                );
+                            })}
 
-                                {/* Grid Lines */}
-                                <line x1="0" y1="0" x2="100" y2="0" stroke="#f3f4f6" strokeWidth="0.5" />
-                                <line x1="0" y1={height/2} x2="100" y2={height/2} stroke="#f3f4f6" strokeWidth="0.5" />
-                                <line x1="0" y1={height} x2="100" y2={height} stroke="#f3f4f6" strokeWidth="0.5" />
+                            {/* TDEE Line */}
+                            <line x1={padding} y1={tdeeY} x2={width - padding} y2={tdeeY} stroke="#94a3b8" strokeWidth="1" strokeDasharray="5 5" />
+                            <text x={width - padding + 5} y={tdeeY + 4} fontSize="10" fill="#64748b" textAnchor="start">TDEE</text>
 
-                                {/* TDEE Reference Line (Dashed) */}
-                                <line x1="0" y1={tdeeY} x2="100" y2={tdeeY} stroke="#94a3b8" strokeWidth="0.5" strokeDasharray="3 3" />
-                                
-                                {/* Area Fill */}
-                                <polygon points={`0,${height} ${points} 100,${height}`} fill="url(#chartGradient)" />
+                            {/* Smooth Area & Line */}
+                            <path d={areaPath} fill="url(#chartGradient)" />
+                            <path d={smoothPath} fill="none" stroke="#2563eb" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
 
-                                {/* Main Data Line */}
-                                <polyline points={points} fill="none" stroke="#2563eb" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+                            {/* Interactive Data Points */}
+                            {pointsArr.map((p, i) => (
+                              <g 
+                                key={i} 
+                                onMouseEnter={() => setHoveredChartPoint({
+                                  x: p.x, 
+                                  y: p.y, 
+                                  value: sortedHistory[i].caloriesIntake, 
+                                  date: sortedHistory[i].date
+                                })}
+                                onMouseLeave={() => setHoveredChartPoint(null)}
+                                className="cursor-pointer"
+                              >
+                                {/* Invisible larger target for easier hovering */}
+                                <circle cx={p.x} cy={p.y} r="8" fill="transparent" /> 
+                                <circle cx={p.x} cy={p.y} r="4" fill="white" stroke="#2563eb" strokeWidth="2" className="transition-all hover:r-5" />
+                              </g>
+                            ))}
 
-                                {/* Data Points */}
-                                {sortedHistory.map((d, i) => (
-                                  <circle 
-                                    key={i} 
-                                    cx={getX(i)} 
-                                    cy={getY(d.caloriesIntake)} 
-                                    r="3" 
-                                    className="fill-blue-600 stroke-white stroke-2 hover:r-4 transition-all cursor-pointer"
-                                    vectorEffect="non-scaling-stroke"
-                                  >
-                                    <title>{d.date}: {d.caloriesIntake} kcal</title>
-                                  </circle>
-                                ))}
-                            </svg>
+                            {/* X-Axis Labels */}
+                            {sortedHistory.map((d, i) => (
+                               <text key={i} x={getX(i)} y={height - 10} textAnchor="middle" fontSize="10" fill="#6b7280">
+                                 {d.date.slice(5)}
+                               </text>
+                            ))}
+                        </svg>
 
-                            {/* TDEE Label */}
-                            <div className="absolute right-0 bg-slate-100 text-slate-600 text-[10px] px-1.5 py-0.5 rounded shadow-sm transform -translate-y-1/2" style={{top: `${(tdeeY/height)*100}%`}}>
-                               TDEE: {tdee}
-                            </div>
-                        </div>
-
-                        {/* X-axis Labels */}
-                        <div className="absolute left-10 right-0 bottom-0 h-6 flex justify-between items-center text-[10px] text-gray-500">
-                           {sortedHistory.map((d, i) => (
-                             <div key={i} style={{ width: `${100/sortedHistory.length}%`, textAlign: 'center' }}>
-                               {d.date.slice(5)} {/* Show MM-DD */}
-                             </div>
-                           ))}
-                        </div>
+                        {/* Custom Tooltip Overlay */}
+                        {hoveredChartPoint && (
+                          <div 
+                            className="absolute bg-gray-900 text-white text-xs rounded-lg py-1 px-2 pointer-events-none shadow-lg transform -translate-x-1/2 -translate-y-full mb-2 z-10 whitespace-nowrap"
+                            style={{ 
+                              left: `${(hoveredChartPoint.x / width) * 100}%`, 
+                              top: `${(hoveredChartPoint.y / height) * 100}%`,
+                              marginTop: '-10px'
+                            }}
+                          >
+                             <div className="font-semibold">{hoveredChartPoint.date}</div>
+                             <div>摄入: {hoveredChartPoint.value} kcal</div>
+                             <div className="absolute bottom-0 left-1/2 transform -translate-x-1/2 translate-y-1/2 border-4 border-transparent border-t-gray-900"></div>
+                          </div>
+                        )}
                       </div>
                     )
                  })()}
               </div>
 
-              {/* History Table */}
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm text-left">
+              {/* History Table with Details */}
+              <div className="overflow-x-visible">
+                <table className="w-full text-sm text-left border-collapse">
                   <thead className="bg-gray-50 text-gray-600 font-medium border-b border-gray-200">
                     <tr>
                       <th className="py-3 px-4">日期</th>
+                      <th className="py-3 px-4">饮食详情</th>
                       <th className="py-3 px-4">摄入 (kcal)</th>
-                      <th className="py-3 px-4">目标 (kcal)</th>
                       <th className="py-3 px-4">差值</th>
                       <th className="py-3 px-4 text-right">操作</th>
                     </tr>
@@ -679,10 +801,58 @@ const App = () => {
                     {history.map((record, index) => {
                        const diff = record.caloriesIntake - record.caloriesBurned;
                        return (
-                        <tr key={index} className="hover:bg-gray-50/50">
+                        <tr key={index} className="hover:bg-gray-50/50 group relative">
                           <td className="py-3 px-4 font-medium text-gray-800">{record.date}</td>
+                          <td className="py-3 px-4 relative">
+                             {/* Meal Details Popover Trigger */}
+                             <div 
+                               className="inline-block"
+                               onMouseEnter={() => setHoveredMealRow(record.date)}
+                               onMouseLeave={() => setHoveredMealRow(null)}
+                             >
+                                <button className="text-blue-500 hover:bg-blue-50 p-1.5 rounded-full transition-colors">
+                                  <ScrollText size={18} />
+                                </button>
+
+                                {/* Popover Content */}
+                                {hoveredMealRow === record.date && (
+                                  <div className="absolute left-0 top-full mt-1 w-64 bg-white rounded-lg shadow-xl border border-gray-100 z-20 p-3 animate-in fade-in zoom-in-95 duration-100 origin-top-left max-h-64 overflow-y-auto custom-scrollbar">
+                                     <h4 className="text-xs font-bold text-gray-500 mb-2 uppercase tracking-wider">当日菜单</h4>
+                                     
+                                     {record.meals && record.meals.length > 0 ? (
+                                        <div className="space-y-3">
+                                          {(['breakfast', 'lunch', 'dinner'] as MealCategory[]).map(cat => {
+                                            const mealsInCat = record.meals.filter(m => (m.category || 'lunch') === cat);
+                                            if (mealsInCat.length === 0) return null;
+                                            const config = MEAL_CONFIG[cat];
+                                            
+                                            return (
+                                              <div key={cat}>
+                                                <div className={`text-[10px] font-bold ${config.color} uppercase mb-1`}>{config.label}</div>
+                                                <ul className="space-y-1">
+                                                  {mealsInCat.map((meal, idx) => (
+                                                    <li key={idx} className="text-xs flex justify-between items-start">
+                                                        <span className="text-gray-700 w-32 truncate">{meal.name} <span className="text-gray-400 text-[10px]">x{meal.quantity}</span></span>
+                                                        <span className="text-gray-500 text-[10px]">{Math.round(meal.calories * meal.quantity)}</span>
+                                                    </li>
+                                                  ))}
+                                                </ul>
+                                              </div>
+                                            )
+                                          })}
+                                        </div>
+                                     ) : (
+                                       <div className="text-xs text-gray-400 italic py-2 text-center">无详细食物记录</div>
+                                     )}
+                                     <div className="mt-2 pt-2 border-t border-gray-100 flex justify-between items-center">
+                                       <span className="text-xs text-gray-500 font-medium">总热量</span>
+                                       <span className="text-sm font-bold text-blue-600">{record.caloriesIntake}</span>
+                                     </div>
+                                  </div>
+                                )}
+                             </div>
+                          </td>
                           <td className="py-3 px-4">{record.caloriesIntake}</td>
-                          <td className="py-3 px-4 text-gray-500">{record.caloriesBurned}</td>
                           <td className={`py-3 px-4 font-medium ${diff > 0 ? 'text-red-500' : 'text-green-500'}`}>
                             {diff > 0 ? '+' : ''}{diff}
                           </td>
