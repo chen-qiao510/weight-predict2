@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { GoogleGenAI } from "@google/genai";
+// Removed GoogleGenAI import
 import { 
   Activity, 
   Trash2, 
@@ -23,7 +23,10 @@ import {
   ScrollText,
   Sunrise,
   Sun,
-  Moon
+  Moon,
+  Settings,
+  X,
+  Zap
 } from 'lucide-react';
 
 // --- Safe API Key Retrieval ---
@@ -88,6 +91,12 @@ type DailyRecord = {
   meals: FoodItem[]; // Saved meals for that day
 };
 
+type AIConfig = {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+};
+
 // --- Constants ---
 const ACTIVITY_LEVELS = [
   { value: 1.2, label: '久坐不动 (办公室工作，极少运动)' },
@@ -110,6 +119,13 @@ const MEAL_CONFIG = {
   breakfast: { label: '早餐', icon: Sunrise, color: 'text-orange-500', bg: 'bg-orange-50', border: 'border-orange-200' },
   lunch: { label: '午餐', icon: Sun, color: 'text-yellow-600', bg: 'bg-yellow-50', border: 'border-yellow-200' },
   dinner: { label: '晚餐', icon: Moon, color: 'text-indigo-500', bg: 'bg-indigo-50', border: 'border-indigo-200' }
+};
+
+// Updated Default Configuration to use Volcengine (DeepSeek V3) as requested
+const DEFAULT_AI_CONFIG: AIConfig = {
+  baseUrl: "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+  apiKey: "09f02a14-bc45-43f7-80ba-136d8cad1011", 
+  model: "deepseek-v3-1-terminus"
 };
 
 // --- Helper Functions ---
@@ -164,6 +180,57 @@ const getSmoothPath = (points: {x: number, y: number}[]) => {
   return d;
 };
 
+// --- API Helpers ---
+
+// Generic OpenAI-compatible client
+const callAI = async (prompt: string, config: AIConfig) => {
+  // Fallback to Env key if config key is empty
+  const finalApiKey = config.apiKey || getApiKey();
+  const finalUrl = config.baseUrl || DEFAULT_AI_CONFIG.baseUrl;
+  const finalModel = config.model || DEFAULT_AI_CONFIG.model;
+
+  if (!finalApiKey) {
+     throw new Error("Missing API Key. Please configure it in settings or environment variables.");
+  }
+
+  try {
+    const response = await fetch(finalUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${finalApiKey}`
+      },
+      body: JSON.stringify({
+        model: finalModel,
+        messages: [
+          {
+            role: "system",
+            content: "You are a professional nutritionist API. You strictly output valid JSON objects only. Do not output markdown code blocks. Do not output explanations."
+          },
+          {
+            role: "user",
+            content: prompt
+          }
+        ],
+        stream: false,
+        // response_format: { type: 'json_object' } // Removed to maximize compatibility with non-DeepSeek/OpenAI providers
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`API Error: ${response.status} - ${errorData.error?.message || response.statusText}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices[0].message.content;
+    return content;
+  } catch (error) {
+    console.error("AI Call Failed:", error);
+    throw error;
+  }
+};
+
 // --- Components ---
 
 const Card = ({ children, className = "" }: { children?: React.ReactNode, className?: string }) => (
@@ -192,6 +259,136 @@ const Select = (props: React.SelectHTMLAttributes<HTMLSelectElement>) => (
   />
 );
 
+// Settings Modal Component
+const SettingsModal = ({ 
+  isOpen, 
+  onClose, 
+  config, 
+  onSave 
+}: { 
+  isOpen: boolean, 
+  onClose: () => void, 
+  config: AIConfig, 
+  onSave: (c: AIConfig) => void 
+}) => {
+  const [localConfig, setLocalConfig] = useState(config);
+
+  useEffect(() => {
+    setLocalConfig(config);
+  }, [config]);
+
+  if (!isOpen) return null;
+
+  const applyPreset = (type: 'deepseek' | 'volcengine' | 'moonshot') => {
+    if (type === 'deepseek') {
+      setLocalConfig({
+        ...localConfig,
+        baseUrl: "https://api.deepseek.com/chat/completions",
+        model: "deepseek-chat"
+      });
+    } else if (type === 'volcengine') {
+      setLocalConfig({
+        ...localConfig,
+        baseUrl: "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+        apiKey: "09f02a14-bc45-43f7-80ba-136d8cad1011",
+        model: "deepseek-v3-1-terminus"
+      });
+    } else if (type === 'moonshot') {
+       setLocalConfig({
+        ...localConfig,
+        baseUrl: "https://api.moonshot.cn/v1/chat/completions",
+        model: "moonshot-v1-8k"
+      });
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
+        <div className="flex justify-between items-center p-4 border-b border-gray-100">
+          <h3 className="font-bold text-gray-800 flex items-center gap-2">
+            <Settings size={18} />
+            AI 服务配置
+          </h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <X size={20} />
+          </button>
+        </div>
+        <div className="p-4 space-y-4">
+          <div className="bg-blue-50 text-blue-700 p-3 rounded-lg text-xs leading-relaxed">
+             此处支持所有兼容 OpenAI 格式的 API（如 DeepSeek、火山引擎、Kimi 等）。请确保 Base URL 填写完整的接口地址。
+          </div>
+
+          <div>
+             <Label>快速预设 (Presets)</Label>
+             <div className="flex gap-2 mt-1">
+                <button 
+                  onClick={() => applyPreset('deepseek')}
+                  className="px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-700 flex items-center gap-1"
+                >
+                   <Zap size={12} className="text-blue-500" /> DeepSeek
+                </button>
+                <button 
+                  onClick={() => applyPreset('volcengine')}
+                  className="px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-700 flex items-center gap-1 border border-red-200 bg-red-50"
+                >
+                   <Zap size={12} className="text-red-500" /> 火山引擎 (默认)
+                </button>
+                 <button 
+                  onClick={() => applyPreset('moonshot')}
+                  className="px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded text-xs text-gray-700 flex items-center gap-1"
+                >
+                   <Zap size={12} className="text-purple-500" /> Kimi
+                </button>
+             </div>
+          </div>
+
+          <div>
+            <Label>API 地址 (Base URL)</Label>
+            <Input 
+              value={localConfig.baseUrl} 
+              onChange={e => setLocalConfig({...localConfig, baseUrl: e.target.value})}
+              placeholder="https://..."
+            />
+            <p className="text-[10px] text-gray-400 mt-1">
+              注意: 火山引擎等服务通常需要在基础域名后加上 <span className="font-mono bg-gray-100 px-1 rounded">/chat/completions</span>
+            </p>
+          </div>
+          <div>
+            <Label>API Key</Label>
+            <Input 
+              type="password"
+              value={localConfig.apiKey} 
+              onChange={e => setLocalConfig({...localConfig, apiKey: e.target.value})}
+              placeholder="留空则使用环境变量中的 Key"
+            />
+          </div>
+          <div>
+            <Label>模型名称 (Model)</Label>
+            <Input 
+              value={localConfig.model} 
+              onChange={e => setLocalConfig({...localConfig, model: e.target.value})}
+              placeholder="例如: deepseek-chat"
+            />
+          </div>
+        </div>
+        <div className="p-4 bg-gray-50 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 text-gray-600 text-sm font-medium hover:bg-gray-100 rounded-lg">取消</button>
+          <button 
+            onClick={() => {
+              onSave(localConfig);
+              onClose();
+            }}
+            className="px-4 py-2 bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 rounded-lg"
+          >
+            保存配置
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const App = () => {
   // State: Stats & Calculator
   const [stats, setStats] = useState<UserStats>(INITIAL_STATS);
@@ -212,6 +409,10 @@ const App = () => {
   // State: UI Interactions
   const [hoveredChartPoint, setHoveredChartPoint] = useState<{x: number, y: number, value: number, date: string} | null>(null);
   const [hoveredMealRow, setHoveredMealRow] = useState<string | null>(null); // Date string as ID
+  
+  // State: AI Config
+  const [showSettings, setShowSettings] = useState(false);
+  const [aiConfig, setAiConfig] = useState<AIConfig>(DEFAULT_AI_CONFIG);
 
   // Calculate TDEE on stats change
   useEffect(() => {
@@ -221,23 +422,16 @@ const App = () => {
   // Load data from LocalStorage
   useEffect(() => {
     const savedLibrary = localStorage.getItem('foodLibrary');
-    if (savedLibrary) {
-      setFoodLibrary(JSON.parse(savedLibrary));
-    }
+    if (savedLibrary) setFoodLibrary(JSON.parse(savedLibrary));
 
     const savedHistory = localStorage.getItem('dailyRecords');
-    if (savedHistory) {
-      setHistory(JSON.parse(savedHistory));
-    }
+    if (savedHistory) setHistory(JSON.parse(savedHistory));
 
     const savedStats = localStorage.getItem('userStats');
-    if (savedStats) {
-      setStats(JSON.parse(savedStats));
-    }
+    if (savedStats) setStats(JSON.parse(savedStats));
     
     const savedMeals = localStorage.getItem('currentMeals');
     if (savedMeals) {
-        // Migration: Ensure category exists for old data
         const parsed = JSON.parse(savedMeals);
         const migrated = parsed.map((m: any) => ({
             ...m,
@@ -245,75 +439,66 @@ const App = () => {
         }));
         setCurrentMeals(migrated);
     }
+    
+    // We prioritize the updated default config if user hasn't explicitly set one, 
+    // but to be safe we respect local storage if it exists, OR we can reset it if it looks like the old default.
+    // For this update request, let's load it but if it has no key/standard default, use the new default.
+    const savedAiConfig = localStorage.getItem('aiConfig');
+    if (savedAiConfig) {
+       const parsed = JSON.parse(savedAiConfig);
+       // If the loaded config is empty or the old default, we overwrite it with the new default
+       if (!parsed.apiKey && parsed.baseUrl.includes('deepseek.com')) {
+          setAiConfig(DEFAULT_AI_CONFIG);
+       } else {
+          setAiConfig(parsed);
+       }
+    }
   }, []);
 
   // Save to LocalStorage effects
-  useEffect(() => {
-    localStorage.setItem('foodLibrary', JSON.stringify(foodLibrary));
-  }, [foodLibrary]);
-
-  useEffect(() => {
-    localStorage.setItem('dailyRecords', JSON.stringify(history));
-  }, [history]);
-
-  useEffect(() => {
-    localStorage.setItem('userStats', JSON.stringify(stats));
-  }, [stats]);
-  
-  useEffect(() => {
-      localStorage.setItem('currentMeals', JSON.stringify(currentMeals));
-  }, [currentMeals]);
+  useEffect(() => localStorage.setItem('foodLibrary', JSON.stringify(foodLibrary)), [foodLibrary]);
+  useEffect(() => localStorage.setItem('dailyRecords', JSON.stringify(history)), [history]);
+  useEffect(() => localStorage.setItem('userStats', JSON.stringify(stats)), [stats]);
+  useEffect(() => localStorage.setItem('currentMeals', JSON.stringify(currentMeals)), [currentMeals]);
+  useEffect(() => localStorage.setItem('aiConfig', JSON.stringify(aiConfig)), [aiConfig]);
 
 
   // AI Estimation Handler
   const handleAiEstimate = async () => {
     if (!searchQuery.trim()) return;
 
-    // Retrieve API Key using the robust helper
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      setAiError('未检测到 API Key，请在 Vercel 环境变量中配置 VITE_API_KEY');
-      return;
-    }
-
     setIsAiLoading(true);
     setAiError('');
 
     try {
-      const ai = new GoogleGenAI({ apiKey: apiKey });
-      const prompt = `请估算食物 "${searchQuery}" 的热量。请返回一个严格的 JSON 对象，格式为：{"name": "食物标准名称", "unit": "单位(如: 碗, 个, 100g)", "calories": 数字(大卡)}。不要包含任何 Markdown 格式。`;
+      const prompt = `请估算食物 "${searchQuery}" 的热量。请返回一个严格的 JSON 对象，格式为：{"name": "食物标准名称", "unit": "单位(如: 碗, 个, 100g)", "calories": 数字(大卡)}。不要包含任何 Markdown 格式或解释文字。`;
+      
+      const jsonString = await callAI(prompt, aiConfig);
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json"
-        }
-      });
-
-      const text = response.text;
-      if (text) {
-        const data = JSON.parse(text);
+      if (jsonString) {
+        const cleanJson = jsonString.replace(/```json\n?|```/g, '').trim();
+        const data = JSON.parse(cleanJson);
         
-        // Add to library
         const newItem: LibraryItem = {
           name: data.name,
           calories: data.calories,
           unit: data.unit
         };
         
-        // Update library if not exists
         if (!foodLibrary.some(f => f.name === newItem.name)) {
           setFoodLibrary(prev => [...prev, newItem]);
         }
 
-        // Add to current meals
         handleAddFood(newItem);
         setSearchQuery('');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setAiError('AI 服务暂时不可用，请检查 Key 或重试');
+      if (err.message && (err.message.includes('401') || err.message.includes('403'))) {
+         setAiError('API Key 无效或被拒绝，请点击右上角⚙️检查设置');
+      } else {
+         setAiError(`AI 请求失败: ${err.message}`);
+      }
     } finally {
       setIsAiLoading(false);
     }
@@ -354,17 +539,14 @@ const App = () => {
       caloriesIntake: Math.round(totalIntake),
       caloriesBurned: tdee,
       weight: typeof stats.weight === 'number' ? stats.weight : undefined,
-      meals: [...currentMeals] // Clone current meals for history
+      meals: [...currentMeals] 
     };
 
     setHistory(prev => {
-      // Remove existing record for this date if exists
       const filtered = prev.filter(r => r.date !== selectedDate);
-      // Add new record and sort
       return [...filtered, newRecord].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
     });
     
-    // Optional: Clear current meals after save? Maybe not, allow user to keep editing.
     alert(`已保存 ${selectedDate} 的记录！`);
   };
 
@@ -376,13 +558,19 @@ const App = () => {
 
   const totalCalories = currentMeals.reduce((sum, item) => sum + (item.calories * item.quantity), 0);
   const calorieDiff = totalCalories - tdee;
-  const projectedWeightChange = (calorieDiff * 7) / 7700; // 7700 kcal per kg
+  const projectedWeightChange = (calorieDiff * 7) / 7700; 
 
-  // Filtered food library based on search
   const filteredLibrary = foodLibrary.filter(f => f.name.includes(searchQuery));
 
   return (
     <div className="min-h-screen bg-gray-50 pb-20">
+      <SettingsModal 
+        isOpen={showSettings} 
+        onClose={() => setShowSettings(false)} 
+        config={aiConfig}
+        onSave={setAiConfig}
+      />
+
       {/* Header */}
       <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
@@ -392,9 +580,13 @@ const App = () => {
             </div>
             <h1 className="text-xl font-bold text-gray-900">智能热量管家</h1>
           </div>
-          <div className="text-sm text-gray-500 hidden sm:block">
-            Gemini 2.5 Flash 提供 AI 支持
-          </div>
+          <button 
+             onClick={() => setShowSettings(true)}
+             className="text-gray-500 hover:text-gray-700 p-2 rounded-full hover:bg-gray-100 transition-colors"
+             title="AI 设置"
+          >
+             <Settings size={20} />
+          </button>
         </div>
       </header>
 
